@@ -30,6 +30,9 @@ class MP3Viewer extends MediaBaseViewer {
 
         this.isAudioPlayerV2 = this.getIsAudioPlayerV2();
         this.waveformPeaks = [];
+        this.waveformSelection = { kind: 'none' };
+        this.isRangeLooping = false;
+        this.rangePlaybackRaf = 0;
         if (this.isAudioPlayerV2) {
             this.wrapperEl.classList.add('bp-media--v2');
             this.mediaContainerEl.classList.add('bp-media-container--v2');
@@ -120,6 +123,7 @@ class MP3Viewer extends MediaBaseViewer {
      * @inheritdoc
      */
     destroy() {
+        this.stopRangePlaybackWatch();
         this.abortClientWaveformDecode();
         super.destroy();
     }
@@ -186,7 +190,12 @@ class MP3Viewer extends MediaBaseViewer {
      */
     handlePlayRequest = () => {
         this.userRequestedPlay = true;
-        this.togglePlay();
+
+        if (this.waveformSelection && this.waveformSelection.kind === 'range') {
+            this.toggleRangePlayback(this.waveformSelection);
+        } else {
+            this.togglePlay();
+        }
 
         if (this.isWaveformDecodeRetryPending && !this.hasUsedWaveformDecodePlayRetry) {
             this.hasUsedWaveformDecodePlayRetry = true;
@@ -194,6 +203,131 @@ class MP3Viewer extends MediaBaseViewer {
             this.startClientWaveformDecode();
         }
     };
+
+    /**
+     * Store the player-owned waveform range. Playback uses this copy; React owns the drawing.
+     *
+     * @param {{ kind: string, startSec?: number, endSec?: number }} selection
+     * @return {void}
+     */
+    handleWaveformSelectionChange = selection => {
+        this.waveformSelection = selection || { kind: 'none' };
+        if (!this.waveformSelection || this.waveformSelection.kind !== 'range') {
+            this.isRangeLooping = false;
+            this.stopRangePlaybackWatch();
+            return;
+        }
+
+        if (this.mediaEl && !this.mediaEl.paused) {
+            this.scopePlaybackToRange(this.waveformSelection);
+        }
+    };
+
+    /**
+     * @param {boolean} isLooping
+     * @return {void}
+     */
+    handleRangeLoopChange = isLooping => {
+        this.isRangeLooping = !!isLooping;
+        if (this.mediaEl && !this.mediaEl.paused && this.waveformSelection && this.waveformSelection.kind === 'range') {
+            this.scopePlaybackToRange(this.waveformSelection);
+        }
+    };
+
+    /**
+     * Play or pause a selected range. Playhead outside the range jumps to start.
+     *
+     * @param {{ startSec: number, endSec: number }} selection
+     * @return {void}
+     */
+    toggleRangePlayback(selection) {
+        if (!this.mediaEl.paused) {
+            this.pause(undefined, true);
+            return;
+        }
+
+        const start = this.getRangePlaybackStart(selection);
+        this.play();
+        this.scopePlaybackToRange(selection, start);
+    }
+
+    /**
+     * @param {{ startSec: number, endSec: number }} selection
+     * @return {number}
+     */
+    getRangePlaybackStart(selection) {
+        const current = this.mediaEl.currentTime;
+        if (current >= selection.startSec && current < selection.endSec) {
+            return current;
+        }
+        return selection.startSec;
+    }
+
+    /**
+     * Stop range end-watch so full-file playback is not clipped.
+     *
+     * @return {void}
+     */
+    stopRangePlaybackWatch() {
+        if (this.rangePlaybackRaf) {
+            window.cancelAnimationFrame(this.rangePlaybackRaf);
+            this.rangePlaybackRaf = 0;
+        }
+        this.removePauseEventListener();
+    }
+
+    /**
+     * Wrap or pause as soon as currentTime reaches the range end.
+     *
+     * @return {void}
+     */
+    enforceRangePlayback = () => {
+        const selection = this.waveformSelection;
+        if (!this.mediaEl || !selection || selection.kind !== 'range') {
+            return;
+        }
+        if (this.mediaEl.currentTime < selection.endSec) {
+            return;
+        }
+        if (this.isRangeLooping) {
+            this.setMediaTime(selection.startSec);
+            return;
+        }
+        this.pause();
+    };
+
+    /**
+     * Keep playback inside the range. Loop wraps to start; otherwise pause at end.
+     *
+     * @param {{ startSec: number, endSec: number }} selection
+     * @param {number} [start]
+     * @return {void}
+     */
+    scopePlaybackToRange(selection, start) {
+        const playFrom = typeof start === 'number' ? start : this.getRangePlaybackStart(selection);
+        if (this.mediaEl.currentTime < selection.startSec || this.mediaEl.currentTime >= selection.endSec) {
+            this.setMediaTime(playFrom);
+        }
+
+        this.stopRangePlaybackWatch();
+        this.pauseListener = this.enforceRangePlayback;
+        this.mediaEl.addEventListener('timeupdate', this.pauseListener);
+
+        const tick = () => {
+            this.enforceRangePlayback();
+            if (
+                this.mediaEl &&
+                !this.mediaEl.paused &&
+                this.waveformSelection &&
+                this.waveformSelection.kind === 'range'
+            ) {
+                this.rangePlaybackRaf = window.requestAnimationFrame(tick);
+            } else {
+                this.rangePlaybackRaf = 0;
+            }
+        };
+        this.rangePlaybackRaf = window.requestAnimationFrame(tick);
+    }
 
     /**
      * Fetch compressed audio bytes for client decode. Prefers an already-fetched blob URL.
@@ -358,6 +492,8 @@ class MP3Viewer extends MediaBaseViewer {
             onMuteChange: this.toggleMute,
             onPlayPause: this.isAudioPlayerV2 ? this.handlePlayRequest : this.togglePlay,
             onRateChange: this.setRate,
+            onSelectionChange: this.handleWaveformSelectionChange,
+            onLoopChange: this.handleRangeLoopChange,
             onTimeChange: this.handleTimeupdateFromMediaControls,
             onVolumeChange: this.setVolume,
             rate: this.getRate(),

@@ -8,6 +8,7 @@ import {
     WAVEFORM_COLOR_UNPLAYED,
 } from './colors';
 import { formatTime, morphPeaks, toChannels, WAVEFORM_PEAK_TRANSITION_MS } from './peaks';
+import { normalizeRange, pointerDeltaIsRange, snapTimeToPlayhead, timeFromClientX } from './selection';
 import './WaveformView.scss';
 
 export type WaveformViewProps = {
@@ -17,6 +18,7 @@ export type WaveformViewProps = {
     height?: number;
     interactive?: boolean;
     mediaEl?: HTMLMediaElement | null;
+    onRangeChange?: (range: { startSec: number; endSec: number }, isDraft: boolean) => void;
     onSeek?: (timeSec: number) => void;
     peaks: ArrayLike<number>;
 };
@@ -55,27 +57,32 @@ export default function WaveformView({
     height = WAVEFORM_HEIGHT,
     interactive = true,
     mediaEl,
+    onRangeChange,
     onSeek,
     peaks,
 }: WaveformViewProps): JSX.Element {
     const containerRef = useRef<HTMLDivElement>(null);
+    const trackRef = useRef<HTMLDivElement>(null);
     const playheadRef = useRef<HTMLDivElement>(null);
     const playheadRafRef = useRef(0);
     const wavesurferRef = useRef<WaveSurfer | null>(null);
     const onSeekRef = useRef(onSeek);
-    const interactiveRef = useRef(interactive);
+    const onRangeChangeRef = useRef(onRangeChange);
     const currentTimeRef = useRef(currentTime);
     const peaksRef = useRef(peaks);
     const displayedPeaksRef = useRef<ArrayLike<number> | null>(null);
     const peakTransitionRafRef = useRef(0);
     const durationSecRef = useRef(durationSec);
+    const rangeDragRef = useRef<{ startX: number; startTime: number; isRange: boolean } | null>(null);
+    const stopWindowDragRef = useRef<(() => void) | null>(null);
     onSeekRef.current = onSeek;
-    interactiveRef.current = interactive;
+    onRangeChangeRef.current = onRangeChange;
     currentTimeRef.current = currentTime;
     peaksRef.current = peaks;
     durationSecRef.current = durationSec;
 
     const [hoverProgress, setHoverProgress] = useState<number | null>(null);
+    const [isCreatingRange, setIsCreatingRange] = useState(false);
     const [canvasWidthPx, setCanvasWidthPx] = useState(0);
     const bufferProgress = getBufferedProgress(bufferedRange, durationSec);
 
@@ -111,18 +118,11 @@ export default function WaveformView({
             fillParent: true,
             height,
             hideScrollbar: true,
-            interact: interactiveRef.current,
+            interact: false,
             normalize: false,
             peaks: toChannels(peaksRef.current),
             progressColor: WAVEFORM_COLOR_PLAYED,
             waveColor: WAVEFORM_COLOR_UNPLAYED,
-        });
-
-        const unsubscribeClick = wavesurfer.on('click', (relativeX: number) => {
-            if (!interactiveRef.current) {
-                return;
-            }
-            onSeekRef.current?.(relativeX * durationSecRef.current);
         });
 
         wavesurferRef.current = wavesurfer;
@@ -130,7 +130,6 @@ export default function WaveformView({
 
         return () => {
             window.cancelAnimationFrame(peakTransitionRafRef.current);
-            unsubscribeClick();
             wavesurfer.destroy();
             wavesurferRef.current = null;
             displayedPeaksRef.current = null;
@@ -153,14 +152,6 @@ export default function WaveformView({
         observer.observe(el);
         return () => observer.disconnect();
     }, []);
-
-    useEffect(() => {
-        const wavesurfer = wavesurferRef.current;
-        if (!wavesurfer || !wavesurfer.setOptions) {
-            return;
-        }
-        wavesurfer.setOptions({ interact: interactive });
-    }, [interactive]);
 
     useLayoutEffect(() => {
         if (mediaEl && !mediaEl.paused) {
@@ -264,9 +255,47 @@ export default function WaveformView({
         wavesurfer.setTime(currentTimeRef.current);
     }, [bufferProgress, canvasWidthPx, hoverProgress]);
 
+    const timeFromPointer = useCallback((clientX: number, snapToPlayhead: boolean): number => {
+        const track = trackRef.current;
+        if (!track) {
+            return 0;
+        }
+        const rect = track.getBoundingClientRect();
+        const time = timeFromClientX(clientX, rect.left, rect.width, durationSecRef.current);
+        if (!snapToPlayhead) {
+            return time;
+        }
+        return snapTimeToPlayhead(time, currentTimeRef.current, durationSecRef.current, rect.width);
+    }, []);
+
+    const applyRangeMove = useCallback(
+        (clientX: number): void => {
+            const drag = rangeDragRef.current;
+            if (!drag) {
+                return;
+            }
+            if (!drag.isRange && !pointerDeltaIsRange(clientX - drag.startX)) {
+                return;
+            }
+            drag.isRange = true;
+            setIsCreatingRange(true);
+            setHoverProgress(null);
+            const time = timeFromPointer(clientX, true);
+            const range = normalizeRange(drag.startTime, time, durationSecRef.current);
+            if (range) {
+                onRangeChangeRef.current?.(range, true);
+            }
+        },
+        [timeFromPointer],
+    );
+
     const onHoverMove = useCallback(
         (event: React.MouseEvent<HTMLDivElement>) => {
             if (!interactive) {
+                return;
+            }
+            if (rangeDragRef.current) {
+                applyRangeMove(event.clientX);
                 return;
             }
             const rect = event.currentTarget.getBoundingClientRect();
@@ -279,12 +308,89 @@ export default function WaveformView({
             }
             setHoverProgress(Math.min(1, Math.max(0, x / rect.width)));
         },
-        [durationSec, interactive],
+        [applyRangeMove, durationSec, interactive],
     );
 
     const onHoverLeave = useCallback(() => {
+        if (rangeDragRef.current) {
+            return;
+        }
         setHoverProgress(null);
     }, []);
+
+    const finishPointerGesture = useCallback(
+        (clientX: number): void => {
+            stopWindowDragRef.current?.();
+            const drag = rangeDragRef.current;
+            rangeDragRef.current = null;
+            setIsCreatingRange(false);
+            if (!drag) {
+                return;
+            }
+            if (!drag.isRange) {
+                onSeekRef.current?.(timeFromPointer(clientX, false));
+                return;
+            }
+            const time = timeFromPointer(clientX, true);
+            const range = normalizeRange(drag.startTime, time, durationSecRef.current);
+            if (range) {
+                onRangeChangeRef.current?.(range, false);
+            }
+        },
+        [timeFromPointer],
+    );
+
+    const onPointerDown = useCallback(
+        (event: React.PointerEvent<HTMLDivElement>) => {
+            if (!interactive || event.button) {
+                return;
+            }
+
+            const startTime = timeFromPointer(event.clientX, false);
+            rangeDragRef.current = { isRange: false, startTime, startX: event.clientX };
+            setHoverProgress(null);
+
+            const onMove = (moveEvent: MouseEvent): void => {
+                applyRangeMove(moveEvent.clientX);
+            };
+
+            const onUp = (upEvent: MouseEvent): void => {
+                finishPointerGesture(upEvent.clientX);
+            };
+
+            stopWindowDragRef.current = () => {
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+                document.removeEventListener('pointermove', onMove);
+                document.removeEventListener('pointerup', onUp);
+                document.removeEventListener('pointercancel', onUp);
+                stopWindowDragRef.current = null;
+            };
+
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+            document.addEventListener('pointermove', onMove);
+            document.addEventListener('pointerup', onUp);
+            document.addEventListener('pointercancel', onUp);
+        },
+        [applyRangeMove, finishPointerGesture, interactive, timeFromPointer],
+    );
+
+    const onPointerMove = useCallback(
+        (event: React.PointerEvent<HTMLDivElement>) => {
+            if (rangeDragRef.current) {
+                applyRangeMove(event.clientX);
+            }
+        },
+        [applyRangeMove],
+    );
+
+    const onPointerUp = useCallback(
+        (event: React.PointerEvent<HTMLDivElement>) => {
+            finishPointerGesture(event.clientX);
+        },
+        [finishPointerGesture],
+    );
 
     const hoverLeft = hoverProgress == null ? null : `${hoverProgress * 100}%`;
 
@@ -294,9 +400,14 @@ export default function WaveformView({
             data-testid="bp-waveform-view"
         >
             <div
-                className="bp-WaveformView-track"
+                ref={trackRef}
+                className={`bp-WaveformView-track${isCreatingRange ? ' bp-WaveformView-track--creating' : ''}`}
                 onMouseLeave={interactive ? onHoverLeave : undefined}
                 onMouseMove={interactive ? onHoverMove : undefined}
+                onPointerCancel={interactive ? onPointerUp : undefined}
+                onPointerDown={interactive ? onPointerDown : undefined}
+                onPointerMove={interactive ? onPointerMove : undefined}
+                onPointerUp={interactive ? onPointerUp : undefined}
             >
                 <div ref={containerRef} className="bp-WaveformView-canvas" />
                 <div
@@ -305,7 +416,7 @@ export default function WaveformView({
                     className="bp-WaveformView-playhead"
                     data-testid="bp-waveform-playhead"
                 />
-                {hoverLeft != null && hoverProgress != null && (
+                {hoverLeft != null && hoverProgress != null && !isCreatingRange && (
                     <div className="bp-WaveformView-hover" data-testid="bp-waveform-hover" style={{ left: hoverLeft }}>
                         <div className="bp-WaveformView-hoverTime" data-testid="bp-waveform-hover-time">
                             {formatTime(hoverProgress * durationSec)}

@@ -15,15 +15,20 @@ const mockSetOptions = jest.fn();
 const mockSetTime = jest.fn();
 const mockObserve = jest.fn();
 const mockDisconnect = jest.fn();
-let clickHandler: ((relativeX: number) => void) | undefined;
 let resizeCallback: ResizeObserverCallback | undefined;
 
-const mockOn = jest.fn((event: string, handler: (relativeX: number) => void) => {
-    if (event === 'click') {
-        clickHandler = handler;
-    }
-    return jest.fn();
-});
+const mockOn = jest.fn(() => jest.fn());
+
+function dispatchDocumentPointer(type: string, clientX: number): void {
+    document.dispatchEvent(
+        new MouseEventExtended(type, {
+            bubbles: true,
+            button: 0,
+            cancelable: true,
+            clientX,
+        }),
+    );
+}
 
 const mockResizeObserver = jest.fn().mockImplementation((callback: ResizeObserverCallback) => {
     resizeCallback = callback;
@@ -58,7 +63,6 @@ describe('WaveformView', () => {
     });
 
     beforeEach(() => {
-        clickHandler = undefined;
         resizeCallback = undefined;
         jest.clearAllMocks();
     });
@@ -87,6 +91,7 @@ describe('WaveformView', () => {
         expect(options.media).toBeUndefined();
         expect(options.barAlign).toBeUndefined();
         expect(options.cursorWidth).toBe(0);
+        expect(options.interact).toBe(false);
         expect(screen.getByTestId('bp-waveform-playhead')).toHaveStyle({ left: '0%' });
     });
 
@@ -163,14 +168,28 @@ describe('WaveformView', () => {
         expect(screen.queryByTestId('bp-waveform-hover-time')).not.toBeInTheDocument();
     });
 
-    test('should seek from a wavesurfer click', () => {
+    test('should seek from a click under 4px of movement', () => {
+        const onRangeChange = jest.fn();
         const onSeek = jest.fn();
-        render(<WaveformView durationSec={8} onSeek={onSeek} peaks={[0.2, 0.8]} />);
+        render(<WaveformView durationSec={8} onRangeChange={onRangeChange} onSeek={onSeek} peaks={[0.2, 0.8]} />);
+        const track = screen.getByTestId('bp-waveform-view').querySelector('.bp-WaveformView-track') as HTMLElement;
+        jest.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+            bottom: 140,
+            height: 140,
+            left: 0,
+            right: 200,
+            toJSON: () => ({}),
+            top: 0,
+            width: 200,
+            x: 0,
+            y: 0,
+        });
 
-        expect(clickHandler).toBeDefined();
-        clickHandler?.(0.25);
+        fireEvent.pointerDown(track, { button: 0, clientX: 50 });
+        dispatchDocumentPointer('pointerup', 51);
 
-        expect(onSeek).toHaveBeenCalledWith(2);
+        expect(onSeek).toHaveBeenCalledWith(2.04);
+        expect(onRangeChange).not.toHaveBeenCalled();
     });
 
     test('should ignore hover and clicks while inert', () => {
@@ -190,7 +209,8 @@ describe('WaveformView', () => {
         });
 
         fireEvent.mouseMove(track, { clientX: 50 });
-        clickHandler?.(0.25);
+        fireEvent.pointerDown(track, { button: 0, clientX: 50 });
+        dispatchDocumentPointer('pointerup', 50);
 
         expect(screen.getByTestId('bp-waveform-view')).toHaveClass('bp-WaveformView--inert');
         expect(screen.queryByTestId('bp-waveform-hover-time')).not.toBeInTheDocument();

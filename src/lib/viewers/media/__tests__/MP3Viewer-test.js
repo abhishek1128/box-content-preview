@@ -239,6 +239,67 @@ describe('lib/viewers/media/MP3Viewer', () => {
             expect(mp3.hasUsedWaveformDecodePlayRetry).toBe(true);
             expect(mp3.isWaveformDecodeRetryPending).toBe(false);
         });
+
+        test('should play the selected range instead of the full file', () => {
+            mp3.mediaEl = document.createElement('audio');
+            Object.defineProperty(mp3.mediaEl, 'paused', { configurable: true, value: true });
+            Object.defineProperty(mp3.mediaEl, 'currentTime', { configurable: true, value: 0, writable: true });
+            mp3.waveformSelection = { endSec: 6, kind: 'range', startSec: 2 };
+            jest.spyOn(mp3, 'togglePlay').mockImplementation();
+            jest.spyOn(mp3, 'play').mockImplementation();
+            jest.spyOn(mp3, 'setMediaTime').mockImplementation();
+
+            mp3.handlePlayRequest();
+
+            expect(mp3.togglePlay).not.toBeCalled();
+            expect(mp3.setMediaTime).toBeCalledWith(2);
+            expect(mp3.play).toBeCalled();
+        });
+    });
+
+    describe('handleWaveformSelectionChange()', () => {
+        test('should drop looping when the range is cleared', () => {
+            mp3.mediaEl = document.createElement('audio');
+            mp3.isRangeLooping = true;
+            mp3.waveformSelection = { endSec: 6, kind: 'range', startSec: 2 };
+            jest.spyOn(mp3, 'removePauseEventListener').mockImplementation();
+
+            mp3.handleWaveformSelectionChange({ kind: 'none' });
+
+            expect(mp3.waveformSelection).toEqual({ kind: 'none' });
+            expect(mp3.isRangeLooping).toBe(false);
+            expect(mp3.removePauseEventListener).toBeCalled();
+        });
+    });
+
+    describe('scopePlaybackToRange()', () => {
+        test('should wrap to the range start on the frame that reaches the end', () => {
+            const frames = [];
+            jest.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => {
+                frames.push(cb);
+                return frames.length;
+            });
+            jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(jest.fn());
+
+            mp3.mediaEl = document.createElement('audio');
+            Object.defineProperty(mp3.mediaEl, 'paused', { configurable: true, value: false });
+            Object.defineProperty(mp3.mediaEl, 'currentTime', { configurable: true, value: 5.99, writable: true });
+            mp3.waveformSelection = { endSec: 6, kind: 'range', startSec: 2 };
+            mp3.isRangeLooping = true;
+            jest.spyOn(mp3, 'setMediaTime').mockImplementation(time => {
+                mp3.mediaEl.currentTime = time;
+            });
+            jest.spyOn(mp3, 'pause').mockImplementation();
+
+            mp3.scopePlaybackToRange(mp3.waveformSelection);
+            mp3.setMediaTime.mockClear();
+
+            mp3.mediaEl.currentTime = 6;
+            frames[0]();
+
+            expect(mp3.setMediaTime).toBeCalledWith(2);
+            expect(mp3.pause).not.toBeCalled();
+        });
     });
 
     describe('loadeddataHandler()', () => {
@@ -315,6 +376,8 @@ describe('lib/viewers/media/MP3Viewer', () => {
                 onMuteChange: mp3.toggleMute,
                 onPlayPause: mp3.handlePlayRequest,
                 onRateChange: mp3.setRate,
+                onSelectionChange: mp3.handleWaveformSelectionChange,
+                onLoopChange: mp3.handleRangeLoopChange,
                 onTimeChange: mp3.handleTimeupdateFromMediaControls,
                 onVolumeChange: mp3.setVolume,
                 peaks: [0.2, 0.8],

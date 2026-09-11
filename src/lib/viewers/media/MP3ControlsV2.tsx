@@ -8,6 +8,8 @@ import TimestampControl from '../controls/media/TimestampControl';
 import VolumeControls, { Props as VolumeControlsProps } from '../controls/media/VolumeControls';
 import { ICON_PLAY_LARGE } from '../../icons';
 import { PLACEHOLDER_DURATION_SEC, placeholderPeaks } from './waveform/peaks';
+import { isTimeInRange, WAVEFORM_SELECTION_NONE, WaveformSelection } from './waveform/selection';
+import WaveformRangeOverlay from './waveform/WaveformRangeOverlay';
 import WaveformView from './waveform/WaveformView';
 import './MP3ControlsV2.scss';
 
@@ -20,6 +22,8 @@ export type Props = DurationLabelsProps &
     VolumeControlsProps & {
         bufferedRange?: TimeRanges;
         mediaEl?: HTMLMediaElement | null;
+        onLoopChange?: (isLooping: boolean) => void;
+        onSelectionChange?: (selection: WaveformSelection) => void;
         peaks?: ArrayLike<number>;
     };
 
@@ -31,9 +35,11 @@ export default function MP3ControlsV2({
     isPlaying,
     mediaEl,
     onAutoplayChange,
+    onLoopChange,
     onMuteChange,
     onPlayPause,
     onRateChange,
+    onSelectionChange,
     onTimeChange,
     onVolumeChange,
     peaks,
@@ -46,6 +52,9 @@ export default function MP3ControlsV2({
     const hasMetadata = durationValue > 0;
     const waveformDurationSec = hasMetadata ? durationValue : PLACEHOLDER_DURATION_SEC;
     const [playRequested, setPlayRequested] = useState(false);
+    const [selection, setSelection] = useState<WaveformSelection>(WAVEFORM_SELECTION_NONE);
+    const [isLooping, setIsLooping] = useState(false);
+    const [isRangeDraft, setIsRangeDraft] = useState(false);
 
     useEffect(() => {
         if (isPlaying) {
@@ -53,10 +62,61 @@ export default function MP3ControlsV2({
         }
     }, [isPlaying]);
 
+    const publishSelection = useCallback(
+        (next: WaveformSelection) => {
+            setSelection(next);
+            onSelectionChange?.(next);
+            if (next.kind !== 'range') {
+                setIsLooping(false);
+                onLoopChange?.(false);
+            }
+        },
+        [onLoopChange, onSelectionChange],
+    );
+
     const handlePlayOverlayClick = useCallback(() => {
         setPlayRequested(true);
         onPlayPause(true);
     }, [onPlayPause]);
+
+    const handleSeek = useCallback(
+        (timeSec: number) => {
+            if (isTimeInRange(selection, timeSec)) {
+                onTimeChange(timeSec);
+                return;
+            }
+            if (selection.kind === 'range') {
+                setIsRangeDraft(false);
+                publishSelection(WAVEFORM_SELECTION_NONE);
+            }
+            onTimeChange(timeSec);
+        },
+        [onTimeChange, publishSelection, selection],
+    );
+
+    const handleRangeChange = useCallback(
+        (range: { startSec: number; endSec: number }, isDraft: boolean) => {
+            setIsRangeDraft(isDraft);
+            publishSelection({ kind: 'range', ...range });
+        },
+        [publishSelection],
+    );
+
+    const handleOverlaySelectionChange = useCallback(
+        (next: WaveformSelection) => {
+            setIsRangeDraft(false);
+            publishSelection(next);
+        },
+        [publishSelection],
+    );
+
+    const handleLoopChange = useCallback(
+        (next: boolean) => {
+            setIsLooping(next);
+            onLoopChange?.(next);
+        },
+        [onLoopChange],
+    );
 
     const isWaveformInteractive = playRequested && hasMetadata;
     const isWaitingToPlay = playRequested && !hasMetadata;
@@ -65,15 +125,29 @@ export default function MP3ControlsV2({
     return (
         <div className="bp-MP3ControlsV2" data-testid="media-controls-wrapper-v2">
             <div className="bp-MP3ControlsV2-stage">
-                <WaveformView
-                    bufferedRange={bufferedRange}
-                    currentTime={currentTime}
-                    durationSec={waveformDurationSec}
-                    interactive={isWaveformInteractive}
-                    mediaEl={mediaEl}
-                    onSeek={isWaveformInteractive ? onTimeChange : undefined}
-                    peaks={waveformPeaks}
-                />
+                <div className="bp-MP3ControlsV2-waveform">
+                    <WaveformView
+                        bufferedRange={bufferedRange}
+                        currentTime={currentTime}
+                        durationSec={waveformDurationSec}
+                        interactive={isWaveformInteractive}
+                        mediaEl={mediaEl}
+                        onRangeChange={isWaveformInteractive ? handleRangeChange : undefined}
+                        onSeek={isWaveformInteractive ? handleSeek : undefined}
+                        peaks={waveformPeaks}
+                    />
+                    {isWaveformInteractive && (
+                        <WaveformRangeOverlay
+                            currentTime={currentTime}
+                            durationSec={waveformDurationSec}
+                            hideToolbar={isRangeDraft}
+                            isLooping={isLooping}
+                            onLoopChange={handleLoopChange}
+                            onSelectionChange={handleOverlaySelectionChange}
+                            selection={selection}
+                        />
+                    )}
+                </div>
                 {showPlayOverlay && (
                     <button
                         className="bp-MP3ControlsV2-playOverlay"

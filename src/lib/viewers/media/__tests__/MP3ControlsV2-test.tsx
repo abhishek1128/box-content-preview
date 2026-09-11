@@ -4,8 +4,26 @@ import userEvent from '@testing-library/user-event';
 import MP3ControlsV2, { Props } from '../MP3ControlsV2';
 
 jest.mock('../waveform/WaveformView', () => {
-    function MockWaveformView({ interactive }: { interactive?: boolean }): JSX.Element {
-        return <div data-interactive={interactive ? 'true' : 'false'} data-testid="bp-waveform-view" />;
+    function MockWaveformView({
+        interactive,
+        onRangeChange,
+        onSeek,
+    }: {
+        interactive?: boolean;
+        onRangeChange?: (range: { startSec: number; endSec: number }, isDraft: boolean) => void;
+        onSeek?: (timeSec: number) => void;
+    }): JSX.Element {
+        return (
+            <div data-interactive={interactive ? 'true' : 'false'} data-testid="bp-waveform-view">
+                <button
+                    data-testid="mock-waveform-range"
+                    onClick={() => onRangeChange?.({ endSec: 6, startSec: 2 }, false)}
+                    type="button"
+                />
+                <button data-testid="mock-waveform-seek-inside" onClick={() => onSeek?.(4)} type="button" />
+                <button data-testid="mock-waveform-seek-outside" onClick={() => onSeek?.(7)} type="button" />
+            </div>
+        );
     }
 
     return MockWaveformView;
@@ -137,6 +155,34 @@ describe('MP3ControlsV2', () => {
             );
 
             expect(screen.queryByTestId('bp-MP3ControlsV2-play-overlay')).not.toBeInTheDocument();
+        });
+
+        test('should show a loop control after a range is created and keep it on an inside seek', async () => {
+            const onTimeChange = jest.fn();
+            getWrapper({ durationTime: 8, isPlaying: true, onTimeChange, peaks: [0.2, 0.8] });
+
+            await userEvent.click(screen.getByTestId('mock-waveform-range'));
+
+            expect(await screen.findByTestId('bp-waveform-range-loop')).toBeInTheDocument();
+            expect(screen.getByTestId('bp-waveform-range-fill')).toHaveStyle({ left: '25%', width: '50%' });
+
+            await userEvent.click(screen.getByTestId('mock-waveform-seek-inside'));
+
+            expect(onTimeChange).toHaveBeenCalledWith(4);
+            expect(screen.getByTestId('bp-waveform-range-loop')).toBeInTheDocument();
+        });
+
+        test('should clear the range when seeking outside it', async () => {
+            const onTimeChange = jest.fn();
+            getWrapper({ durationTime: 8, isPlaying: true, onTimeChange, peaks: [0.2, 0.8] });
+
+            await userEvent.click(screen.getByTestId('mock-waveform-range'));
+            expect(await screen.findByTestId('bp-waveform-range')).toBeInTheDocument();
+
+            await userEvent.click(screen.getByTestId('mock-waveform-seek-outside'));
+
+            expect(onTimeChange).toHaveBeenCalledWith(7);
+            expect(screen.queryByTestId('bp-waveform-range')).not.toBeInTheDocument();
         });
     });
 });

@@ -17,6 +17,11 @@
     width: 100%;
     height: 100%;
     cursor: pointer;
+    touch-action: none;
+}
+
+.bp-WaveformView-track--creating {
+    cursor: grabbing;
 }
 
 .bp-WaveformView-canvas {
