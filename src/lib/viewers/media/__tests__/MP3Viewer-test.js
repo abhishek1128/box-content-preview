@@ -577,10 +577,10 @@ describe('lib/viewers/media/MP3Viewer', () => {
             expect(getProps(mp3).isBlueprintEnabled).toBe(true);
         });
 
-        test('should pass Comment controls when the file allows commenting', () => {
+        test('should pass Comment controls when the file allows creating annotations', () => {
             mp3.isAudioPlayerV2 = true;
             mp3.MP3ControlsV2 = MP3ControlsV2;
-            mp3.options.file.permissions = { can_comment: true };
+            mp3.options.file.permissions = { can_create_annotations: true };
 
             mp3.renderUI();
 
@@ -924,7 +924,7 @@ describe('lib/viewers/media/MP3Viewer', () => {
 
     describe('comment range draft', () => {
         beforeEach(() => {
-            mp3.options.file.permissions = { can_comment: true };
+            mp3.options.file.permissions = { can_create_annotations: true };
             jest.spyOn(mp3, 'renderUI').mockImplementation();
             jest.spyOn(mp3, 'emit').mockImplementation();
         });
@@ -1085,8 +1085,9 @@ describe('lib/viewers/media/MP3Viewer', () => {
             permissions
             ${undefined}
             ${{}}
-            ${{ can_comment: false }}
-        `('should hide Comment controls when can_comment is not true ($permissions)', ({ permissions }) => {
+            ${{ can_create_annotations: false }}
+            ${{ can_comment: true }}
+        `('should hide Comment controls when can_create_annotations is not true ($permissions)', ({ permissions }) => {
             mp3.renderUI.mockRestore();
             mp3.isAudioPlayerV2 = true;
             mp3.MP3ControlsV2 = MP3ControlsV2;

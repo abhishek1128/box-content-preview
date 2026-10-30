@@ -1299,14 +1299,14 @@ class MP3Viewer extends MediaBaseViewer {
     }
 
     /**
-     * Only an explicit `can_comment` shows Comment.
-     * A missing file, permissions object, or flag hides it.
+     * Uses the same create permission as the video annotations toggle
+     * (`can_create_annotations`). `can_comment` can be true for anonymous
+     * shared-link visitors who cannot create comments in this UI.
      *
      * @return {boolean}
      */
     getCanCreateComment() {
-        const canComment = this.options?.file?.permissions?.can_comment;
-        return canComment ?? false;
+        return this.hasAnnotationCreatePermission();
     }
 
     handleCommentRangeDraft = draft => {
